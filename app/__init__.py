@@ -4,6 +4,7 @@ import json
 import paho.mqtt.client as mqtt
 from smartcard.System import readers
 from smartcard.scard import SCARD_SHARE_SHARED, SCARD_PROTOCOL_ANY
+from smartcard.util import toHexString
 
 
 def read_mifare_block_0(connection):
@@ -27,6 +28,7 @@ class App:
     def __init__(self, config):
         self.__mqtt = mqtt.Client()
         self.__config = config
+        self.__current_card_id = None
         r = readers()
 
         if len(r):
@@ -35,13 +37,31 @@ class App:
         else:
             raise Exception('No readers found')
 
-    def send_card_id(self, card_id):
+    def handle_card(self):
         payload = {
-            'id': card_id
+            'kind': '',
+            'args': {}
         }
 
-        self.__mqtt.publish('epsi_iot/sensor/sensor01/from_device', json.dumps(payload))
-        print('data sent')
+        try:
+            self.__connection.connect(mode=SCARD_SHARE_SHARED, protocol=SCARD_PROTOCOL_ANY)
+            bloc_data = read_mifare_block_0(self.__connection)
+            card_id = bloc_data[0:4]
+
+            if self.__current_card_id != card_id:
+                payload['kind'] = 'card_inserted'
+                self.__current_card_id = card_id
+
+            elif self.__current_card_id is not None:
+                payload['kind'] = 'current_card'
+
+            payload['args']['id'] = toHexString(self.__current_card_id)
+
+            self.__mqtt.publish('epsi_iot/sensor/sensor01/from_device', json.dumps(payload))
+
+        except Exception as ex:
+            print(ex)
+            self.__current_card_id = None
 
     def on_message(self, userdata, msg):
         parts = msg.topic.split('/')
@@ -78,11 +98,4 @@ class App:
 
     def loop(self):
         self.__mqtt.loop()
-
-        try:
-            self.__connection.connect(mode=SCARD_SHARE_SHARED, protocol=SCARD_PROTOCOL_ANY)
-            bloc_data = read_mifare_block_0(self.__connection)
-            self.send_card_id(bloc_data[0:4])
-
-        except Exception as ex:
-            print(ex)
+        self.handle_card()
